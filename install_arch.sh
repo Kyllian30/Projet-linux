@@ -1,92 +1,104 @@
 #!/bin/bash
 
-# Vérification des permissions root
+# Vérification que le script est exécuté en root
 if [ "$(id -u)" -ne 0 ]; then
     echo "Ce script doit être exécuté en tant que root."
     exit 1
 fi
 
-# Définition des variables
-disk="/dev/sda"  # Adapter selon l'installation réelle
-hostname="archlinux"
-username="user"
-son_username="son"
-password="azerty123"
+### Définition des variables
+DISK="/dev/sda"
+HOSTNAME="archlinux"
+USERNAME="user"
+SON_USERNAME="son"
+PASSWORD="azerty123"
 
-# Mise à jour de l'horloge
+### Mise à jour de l'horloge
 timedatectl set-ntp true
 
-# Partitionnement du disque
-echo -e "o\nn\n\n\n+512M\nef00\nn\n\n\n\nw" | gdisk $disk
+### Partitionnement du disque avec GPT
+echo -e "o\nn\n\n\n+512M\nt\n1\nn\n\n\n\nw" | fdisk $DISK
 
-# Formatage des partitions
-mkfs.fat -F32 "${disk}1"
+# Création des partitions
+mkfs.fat -F32 "${DISK}1"
+cryptsetup luksFormat "${DISK}2"
+cryptsetup open "${DISK}2" cryptroot
 
-# Chiffrement du disque avec LUKS
-cryptsetup luksFormat "${disk}2" --type luks2 --cipher aes-xts-plain64 --key-size 512 --hash sha512 --iter-time 5000
-cryptsetup open "${disk}2" cryptroot
-
-# Création de volumes LVM
+# Création du volume LVM
 pvcreate /dev/mapper/cryptroot
 vgcreate vg0 /dev/mapper/cryptroot
 lvcreate -L 10G -n encrypted vg0  # Volume chiffré manuel
 lvcreate -L 20G -n root vg0
-lvcreate -L 4G -n swap vg0
-lvcreate -L 30G -n home vg0
-lvcreate -L 10G -n virtualbox vg0
-lvcreate -L 5G -n shared vg0
+lvcreate -L 2G -n swap vg0
+lvcreate -L 40G -n home vg0
+lvcreate -L 5G -n shared vg0  # Volume partagé avec son fils
+lvcreate -L 3G -n virtualbox vg0  # Volume pour VirtualBox
 
-# Formatage des volumes
+# Formatage et montage
 mkfs.ext4 /dev/vg0/root
 mkfs.ext4 /dev/vg0/home
-mkfs.ext4 /dev/vg0/virtualbox
 mkfs.ext4 /dev/vg0/shared
+mkfs.ext4 /dev/vg0/virtualbox
 mkswap /dev/vg0/swap
-
-# Montage des partitions
-mount /dev/vg0/root /mnt
-mkdir -p /mnt/{boot,home,var,virtualbox,shared}
-mount /dev/vg0/home /mnt/home
-mount /dev/vg0/virtualbox /mnt/virtualbox
-mount /dev/vg0/shared /mnt/shared
-mount "${disk}1" /mnt/boot
 swapon /dev/vg0/swap
 
-# Installation du système
+mount /dev/vg0/root /mnt
+mkdir -p /mnt/{boot,home,shared,virtualbox}
+mount /dev/vg0/home /mnt/home
+mount /dev/vg0/shared /mnt/shared
+mount /dev/vg0/virtualbox /mnt/virtualbox
+mount "${DISK}1" /mnt/boot
+
+### Installation du système de base
 pacstrap /mnt base linux linux-firmware vim sudo networkmanager grub efibootmgr lvm2
 
-# Configuration du système
+### Configuration du système
 genfstab -U /mnt >> /mnt/etc/fstab
+
 arch-chroot /mnt /bin/bash <<EOF
+# Configuration locale et fuseau horaire
 ln -sf /usr/share/zoneinfo/Europe/Paris /etc/localtime
 hwclock --systohc
-echo "$hostname" > /etc/hostname
-passwd root <<EOL
-$password
-$password
-EOL
+echo "$HOSTNAME" > /etc/hostname
+sed -i 's/#fr_FR.UTF-8 UTF-8/fr_FR.UTF-8 UTF-8/' /etc/locale.gen
+locale-gen
+echo "LANG=fr_FR.UTF-8" > /etc/locale.conf
 
-# Création des utilisateurs
-useradd -m -G wheel -s /bin/bash $username
-useradd -m -G users -s /bin/bash $son_username
-echo "$username:$password" | chpasswd
-echo "$son_username:$password" | chpasswd
+# Configuration des utilisateurs
+useradd -m -G wheel -s /bin/bash $USERNAME
+useradd -m -G users -s /bin/bash $SON_USERNAME
+echo "$USERNAME:$PASSWORD" | chpasswd
+echo "$SON_USERNAME:$PASSWORD" | chpasswd
 
-# Configuration de sudo
-echo "$username ALL=(ALL) ALL" >> /etc/sudoers
+# Configuration sudo
+echo "$USERNAME ALL=(ALL) ALL" >> /etc/sudoers
 
 # Installation des logiciels demandés
-pacman -S --noconfirm hyprland virtualbox firefox htop neofetch git open-vm-tools xf86-video-vmware 
+pacman -S --noconfirm hyprland kitty firefox htop neofetch git open-vm-tools xdg-user-dirs
 
-# Activer les services essentiels
-systemctl enable NetworkManager
-systemctl enable vmtoolsd.service
-systemctl enable vmware-vmblock-fuse.service
+# Configuration de Hyprland
+mkdir -p /home/$USERNAME/.config/hypr
+cat <<EOL > /home/$USERNAME/.config/hypr/hyprland.conf
+exec-once = waybar &
+input {
+    kb_layout = fr
+}
+EOL
+chown -R $USERNAME:$USERNAME /home/$USERNAME/.config
 
-# Installation et configuration de GRUB
+# Configuration de VirtualBox
+pacman -S --noconfirm virtualbox virtualbox-host-modules-arch
+gpasswd -a $USERNAME vboxusers
+
+# Installation et configuration du chargeur de démarrage GRUB
 grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
 grub-mkconfig -o /boot/grub/grub.cfg
+
+# Activer les services
+systemctl enable NetworkManager.service
+systemctl enable vmtoolsd.service
+
+exit
 EOF
 
-# Fin de l'installation
-echo "Installation terminée ! Redémarrez après avoir éjecté le média d'installation."
+echo "Installation terminée. Vous pouvez redémarrer la machine."
