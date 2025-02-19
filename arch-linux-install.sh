@@ -9,8 +9,9 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-if ! grep -qi 'arch' /etc/os-release; then
-    printf "Erreur : Ce script est conçu pour être lancé sur Arch Linux.\n"
+# Vérification que l'OS est Ubuntu ou Debian
+if ! grep -qi 'ubuntu\|debian' /etc/os-release; then
+    printf "Erreur : Ce script est conçu pour être lancé depuis un système Ubuntu ou Debian (installé).\n"
     exit 1
 fi
 
